@@ -36,6 +36,7 @@ export type ParseParams = {
   path: (string | number)[];
   errorMap: ZodErrorMap;
   async: boolean;
+  refinementCtxExtra?: unknown;
 };
 
 export type ParsePathComponent = string | number;
@@ -59,6 +60,7 @@ export type ParseInput = {
   data: any;
   path: (string | number)[];
   parent: ParseContext;
+  refinementCtxExtra: unknown;
 };
 
 export function addIssueToContext(

@@ -313,3 +313,13 @@ test("async short circuit on dirty", async () => {
     expect(result2.error.issues[0].code).toEqual(z.ZodIssueCode.invalid_type);
   }
 });
+
+test("extra ctx", async () => {
+  const extraCtx = { abc: 123 };
+  let extra;
+  z.string().transform((val, ctx) => {
+    extra = ctx.extra;
+    return val;
+  }).parse("asdf", { refinementCtxExtra: extraCtx });
+  expect(extra).toEqual(extraCtx);
+});

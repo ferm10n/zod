@@ -44,6 +44,7 @@ import {
 export type RefinementCtx = {
   addIssue: (arg: IssueData) => void;
   path: (string | number)[];
+  extra: unknown;
 };
 export type ZodRawShape = { [k: string]: ZodTypeAny };
 export type ZodTypeAny = ZodType<any, any, any>;
@@ -64,16 +65,19 @@ class ParseInputLazyPath implements ParseInput {
   _path: ParsePath;
   _key: string | number | (string | number)[];
   _cachedPath: ParsePath = [];
+  refinementCtxExtra: unknown;
   constructor(
     parent: ParseContext,
     value: any,
     path: ParsePath,
-    key: string | number | (string | number)[]
+    key: string | number | (string | number)[],
+    refinementCtxExtra: unknown
   ) {
     this.parent = parent;
     this.data = value;
     this._path = path;
     this._key = key;
+    this.refinementCtxExtra = refinementCtxExtra;
   }
   get path() {
     if (!this._cachedPath.length) {
@@ -243,7 +247,12 @@ export abstract class ZodType<
       data,
       parsedType: getParsedType(data),
     };
-    const result = this._parseSync({ data, path: ctx.path, parent: ctx });
+    const result = this._parseSync({
+      data,
+      path: ctx.path,
+      parent: ctx,
+      refinementCtxExtra: params?.refinementCtxExtra,
+    });
 
     return handleResult(ctx, result);
   }
@@ -274,7 +283,12 @@ export abstract class ZodType<
       parsedType: getParsedType(data),
     };
 
-    const maybeAsyncResult = this._parse({ data, path: ctx.path, parent: ctx });
+    const maybeAsyncResult = this._parse({
+      data,
+      path: ctx.path,
+      parent: ctx,
+      refinementCtxExtra: params?.refinementCtxExtra,
+    });
     const result = await (isAsync(maybeAsyncResult)
       ? maybeAsyncResult
       : Promise.resolve(maybeAsyncResult));
@@ -2067,7 +2081,13 @@ export class ZodArray<
       return Promise.all(
         ([...ctx.data] as any[]).map((item, i) => {
           return def.type._parseAsync(
-            new ParseInputLazyPath(ctx, item, ctx.path, i)
+            new ParseInputLazyPath(
+              ctx,
+              item,
+              ctx.path,
+              i,
+              input.refinementCtxExtra
+            )
           );
         })
       ).then((result) => {
@@ -2077,7 +2097,7 @@ export class ZodArray<
 
     const result = ([...ctx.data] as any[]).map((item, i) => {
       return def.type._parseSync(
-        new ParseInputLazyPath(ctx, item, ctx.path, i)
+        new ParseInputLazyPath(ctx, item, ctx.path, i, input.refinementCtxExtra)
       );
     });
 
@@ -2299,7 +2319,13 @@ export class ZodObject<
       pairs.push({
         key: { status: "valid", value: key },
         value: keyValidator._parse(
-          new ParseInputLazyPath(ctx, value, ctx.path, key)
+          new ParseInputLazyPath(
+            ctx,
+            value,
+            ctx.path,
+            key,
+            input.refinementCtxExtra
+          )
         ),
         alwaysSet: key in ctx.data,
       });
@@ -2336,7 +2362,13 @@ export class ZodObject<
         pairs.push({
           key: { status: "valid", value: key },
           value: catchall._parse(
-            new ParseInputLazyPath(ctx, value, ctx.path, key) //, ctx.child(key), value, getParsedType(value)
+            new ParseInputLazyPath(
+              ctx,
+              value,
+              ctx.path,
+              key,
+              input.refinementCtxExtra
+            ) //, ctx.child(key), value, getParsedType(value)
           ),
           alwaysSet: key in ctx.data,
         });
@@ -2807,6 +2839,7 @@ export class ZodUnion<T extends ZodUnionOptions> extends ZodType<
               data: ctx.data,
               path: ctx.path,
               parent: childCtx,
+              refinementCtxExtra: input.refinementCtxExtra,
             }),
             ctx: childCtx,
           };
@@ -2829,6 +2862,7 @@ export class ZodUnion<T extends ZodUnionOptions> extends ZodType<
           data: ctx.data,
           path: ctx.path,
           parent: childCtx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
 
         if (result.status === "valid") {
@@ -2965,12 +2999,14 @@ export class ZodDiscriminatedUnion<
         data: ctx.data,
         path: ctx.path,
         parent: ctx,
+        refinementCtxExtra: input.refinementCtxExtra,
       }) as any;
     } else {
       return option._parseSync({
         data: ctx.data,
         path: ctx.path,
         parent: ctx,
+        refinementCtxExtra: input.refinementCtxExtra,
       }) as any;
     }
   }
@@ -3155,11 +3191,13 @@ export class ZodIntersection<
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         }),
         this._def.right._parseAsync({
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         }),
       ]).then(([left, right]: any) => handleParsed(left, right));
     } else {
@@ -3168,11 +3206,13 @@ export class ZodIntersection<
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         }),
         this._def.right._parseSync({
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         })
       );
     }
@@ -3283,7 +3323,13 @@ export class ZodTuple<
         const schema = this._def.items[itemIndex] || this._def.rest;
         if (!schema) return null as any as SyncParseReturnType<any>;
         return schema._parse(
-          new ParseInputLazyPath(ctx, item, ctx.path, itemIndex)
+          new ParseInputLazyPath(
+            ctx,
+            item,
+            ctx.path,
+            itemIndex,
+            input.refinementCtxExtra
+          )
         );
       })
       .filter((x) => !!x); // filter nulls
@@ -3387,9 +3433,23 @@ export class ZodRecord<
 
     for (const key in ctx.data) {
       pairs.push({
-        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, key)),
+        key: keyType._parse(
+          new ParseInputLazyPath(
+            ctx,
+            key,
+            ctx.path,
+            key,
+            input.refinementCtxExtra
+          )
+        ),
         value: valueType._parse(
-          new ParseInputLazyPath(ctx, ctx.data[key], ctx.path, key)
+          new ParseInputLazyPath(
+            ctx,
+            ctx.data[key],
+            ctx.path,
+            key,
+            input.refinementCtxExtra
+          )
         ),
       });
     }
@@ -3481,10 +3541,22 @@ export class ZodMap<
       ([key, value], index) => {
         return {
           key: keyType._parse(
-            new ParseInputLazyPath(ctx, key, ctx.path, [index, "key"])
+            new ParseInputLazyPath(
+              ctx,
+              key,
+              ctx.path,
+              [index, "key"],
+              input.refinementCtxExtra
+            )
           ),
           value: valueType._parse(
-            new ParseInputLazyPath(ctx, value, ctx.path, [index, "value"])
+            new ParseInputLazyPath(
+              ctx,
+              value,
+              ctx.path,
+              [index, "value"],
+              input.refinementCtxExtra
+            )
           ),
         };
       }
@@ -3615,7 +3687,9 @@ export class ZodSet<Value extends ZodTypeAny = ZodTypeAny> extends ZodType<
     }
 
     const elements = [...(ctx.data as Set<unknown>).values()].map((item, i) =>
-      valueType._parse(new ParseInputLazyPath(ctx, item, ctx.path, i))
+      valueType._parse(
+        new ParseInputLazyPath(ctx, item, ctx.path, i, input.refinementCtxExtra)
+      )
     );
 
     if (ctx.common.async) {
@@ -3888,7 +3962,12 @@ export class ZodLazy<T extends ZodTypeAny> extends ZodType<
   _parse(input: ParseInput): ParseReturnType<this["_output"]> {
     const { ctx } = this._processInputParams(input);
     const lazySchema = this._def.getter();
-    return lazySchema._parse({ data: ctx.data, path: ctx.path, parent: ctx });
+    return lazySchema._parse({
+      data: ctx.data,
+      path: ctx.path,
+      parent: ctx,
+      refinementCtxExtra: input.refinementCtxExtra,
+    });
   }
 
   static create = <T extends ZodTypeAny>(
@@ -4276,6 +4355,9 @@ export class ZodEffects<
       get path() {
         return ctx.path;
       },
+      get extra() {
+        return input.refinementCtxExtra;
+      },
     };
 
     checkCtx.addIssue = checkCtx.addIssue.bind(checkCtx);
@@ -4295,6 +4377,7 @@ export class ZodEffects<
             data: processed,
             path: ctx.path,
             parent: ctx,
+            refinementCtxExtra: input.refinementCtxExtra,
           });
         });
       } else {
@@ -4302,6 +4385,7 @@ export class ZodEffects<
           data: processed,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
       }
     }
@@ -4327,6 +4411,7 @@ export class ZodEffects<
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
         if (inner.status === "aborted") return INVALID;
         if (inner.status === "dirty") status.dirty();
@@ -4336,7 +4421,12 @@ export class ZodEffects<
         return { status: status.value, value: inner.value };
       } else {
         return this._def.schema
-          ._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx })
+          ._parseAsync({
+            data: ctx.data,
+            path: ctx.path,
+            parent: ctx,
+            refinementCtxExtra: input.refinementCtxExtra,
+          })
           .then((inner) => {
             if (inner.status === "aborted") return INVALID;
             if (inner.status === "dirty") status.dirty();
@@ -4354,6 +4444,7 @@ export class ZodEffects<
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
 
         if (!isValid(base)) return base;
@@ -4368,7 +4459,12 @@ export class ZodEffects<
         return { status: status.value, value: result };
       } else {
         return this._def.schema
-          ._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx })
+          ._parseAsync({
+            data: ctx.data,
+            path: ctx.path,
+            parent: ctx,
+            refinementCtxExtra: input.refinementCtxExtra,
+          })
           .then((base) => {
             if (!isValid(base)) return base;
 
@@ -4528,6 +4624,7 @@ export class ZodDefault<T extends ZodTypeAny> extends ZodType<
       data,
       path: ctx.path,
       parent: ctx,
+      refinementCtxExtra: input.refinementCtxExtra,
     });
   }
 
@@ -4590,6 +4687,7 @@ export class ZodCatch<T extends ZodTypeAny> extends ZodType<
       parent: {
         ...newCtx,
       },
+      refinementCtxExtra: input.refinementCtxExtra,
     });
 
     if (isAsync(result)) {
@@ -4708,6 +4806,7 @@ export class ZodBranded<
       data,
       path: ctx.path,
       parent: ctx,
+      refinementCtxExtra: input.refinementCtxExtra,
     });
   }
 
@@ -4743,6 +4842,7 @@ export class ZodPipeline<
           data: ctx.data,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
         if (inResult.status === "aborted") return INVALID;
         if (inResult.status === "dirty") {
@@ -4753,6 +4853,7 @@ export class ZodPipeline<
             data: inResult.value,
             path: ctx.path,
             parent: ctx,
+            refinementCtxExtra: input.refinementCtxExtra,
           });
         }
       };
@@ -4762,6 +4863,7 @@ export class ZodPipeline<
         data: ctx.data,
         path: ctx.path,
         parent: ctx,
+        refinementCtxExtra: input.refinementCtxExtra,
       });
       if (inResult.status === "aborted") return INVALID;
       if (inResult.status === "dirty") {
@@ -4775,6 +4877,7 @@ export class ZodPipeline<
           data: inResult.value,
           path: ctx.path,
           parent: ctx,
+          refinementCtxExtra: input.refinementCtxExtra,
         });
       }
     }
